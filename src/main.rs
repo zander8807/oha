@@ -12,6 +12,7 @@ use printer::PrintMode;
 use rand::prelude::*;
 use rand_regex::Regex;
 use ratatui::crossterm;
+use regex_syntax::ast::print;
 use result_data::ResultData;
 use std::{env, io::Read, str::FromStr};
 use url::Url;
@@ -109,8 +110,8 @@ Note: If qps is specified, burst will be ignored",
     latency_correction: bool,
     #[clap(help = "No realtime tui", long = "no-tui")]
     no_tui: bool,
-    #[clap(help = "Print results as JSON", short, long)]
-    json: bool,
+    #[clap(help = "Print results as JSON", value_name = "output-file", required = false, short, long)]
+    json: Option<Option<String>>,
     #[clap(help = "Frame per second for tui.", default_value = "16", long = "fps")]
     fps: usize,
     #[clap(
@@ -422,10 +423,11 @@ async fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
-    let print_mode = if opts.json {
-        PrintMode::Json
-    } else {
-        PrintMode::Text
+    let print_mode = match opts.json {
+        Some(path) => {
+            PrintMode::Json(path)
+        },
+        None => PrintMode::Text,
     };
 
     let (result_tx, result_rx) = flume::unbounded();
@@ -490,6 +492,7 @@ async fn main() -> anyhow::Result<()> {
 
     let data_collector = if opts.no_tui || !std::io::stdout().is_tty() {
         // When `--no-tui` is enabled, just collect all data.
+        let print_mode = print_mode.clone();
         tokio::spawn(
             async move {
                 let mut all: ResultData = Default::default();
@@ -501,7 +504,7 @@ async fn main() -> anyhow::Result<()> {
                         } => {}
                     _ = tokio::signal::ctrl_c() => {
                         // User pressed ctrl-c.
-                        let _ = printer::print_result(&mut std::io::stdout(), print_mode, start, &all, start.elapsed(), opts.disable_color, opts.stats_success_breakdown);
+                        let _ = printer::print_result(&mut std::io::stdout(), print_mode.clone(), start, &all, start.elapsed(), opts.disable_color, opts.stats_success_breakdown);
                         std::process::exit(libc::EXIT_SUCCESS);
                     }
                 }
@@ -511,9 +514,10 @@ async fn main() -> anyhow::Result<()> {
         )
     } else {
         // Spawn monitor future which draws realtime tui
+        let print_mode = print_mode.clone();
         tokio::spawn(
             monitor::Monitor {
-                print_mode,
+                print_mode: print_mode,
                 end_line: opts
                     .duration
                     .map(|d| monitor::EndLine::Duration(d.into()))
@@ -675,7 +679,6 @@ async fn main() -> anyhow::Result<()> {
     let duration = start.elapsed();
 
     let res: ResultData = data_collector.await??;
-
     printer::print_result(
         &mut std::io::stdout(),
         print_mode,

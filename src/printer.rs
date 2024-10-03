@@ -5,9 +5,7 @@ use crossterm::style::{StyledContent, Stylize};
 use hyper::http::{self, StatusCode};
 use ratatui::crossterm;
 use std::{
-    collections::BTreeMap,
-    io::Write,
-    time::{Duration, Instant},
+    collections::BTreeMap, io::Write, path::Path, time::{Duration, Instant}
 };
 
 #[derive(Clone, Copy)]
@@ -87,10 +85,36 @@ impl StyleScheme {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum PrintMode {
     Text,
-    Json,
+    Json(Option<String>),
+}
+
+pub struct MultiWriter<'a> {
+    writers: Vec<&'a mut dyn Write>,
+}
+
+impl<'a> MultiWriter<'a> {
+    pub fn new(writers: Vec<&'a mut dyn Write>) -> Self {
+        Self { writers }
+    }
+}
+
+impl<'a> Write for MultiWriter<'a> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        for writer in &mut self.writers {
+            writer.write(buf)?;
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        for writer in &mut self.writers {
+            writer.flush()?;
+        }
+        Ok(())
+    }
 }
 
 pub fn print_result<W: Write>(
@@ -110,7 +134,21 @@ pub fn print_result<W: Write>(
             disable_color,
             stats_success_breakdown,
         )?,
-        PrintMode::Json => print_json(w, start, res, total_duration, stats_success_breakdown)?,
+        PrintMode::Json(path) => {
+            let mut writers: Vec<&mut dyn Write> = vec![w];
+            let mut json_file = path.map(|path| {
+                let file = std::fs::File::create(Path::new(&path)).unwrap();
+                file
+            });
+
+            if let Some(json_file) = &mut json_file {
+                writers.push(json_file)
+            }
+
+            let mut writer = MultiWriter::new(writers);
+
+            print_json(&mut writer, start, res, total_duration, stats_success_breakdown)?
+        },
     }
     Ok(())
 }
